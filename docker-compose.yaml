@@ -42,6 +42,8 @@ x-common-env: &common-env
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
+  MAX_RAM: ${MAX_RAM}
+  MAX_CPU: ${MAX_CPU}
 
 services:
   playwright-service:
@@ -95,6 +97,17 @@ services:
       - backend
     ports:
       - "5432:5432"
+
+  searxng:
+    image: searxng/searxng:latest
+    networks:
+      - backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    container_name: searxng
+    restart: unless-stopped
 
 networks:
   backend:
