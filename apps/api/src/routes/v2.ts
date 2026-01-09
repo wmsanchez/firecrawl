@@ -1,4 +1,5 @@
 import express from "express";
+import { config } from "../config";
 import { RateLimiterMode } from "../types";
 import expressWs from "express-ws";
 import { searchController } from "../controllers/v2/search";
@@ -27,12 +28,17 @@ import {
   idempotencyMiddleware,
   requestTimingMiddleware,
   wrap,
+  isValidJobId,
+  validateJobIdParam,
 } from "./shared";
 import { queueStatusController } from "../controllers/v2/queue-status";
 import { creditUsageHistoricalController } from "../controllers/v2/credit-usage-historical";
 import { tokenUsageHistoricalController } from "../controllers/v2/token-usage-historical";
 import { paymentMiddleware } from "x402-express";
 import { facilitator } from "@coinbase/x402";
+import { agentController } from "../controllers/v2/agent";
+import { agentStatusController } from "../controllers/v2/agent-status";
+import { agentCancelController } from "../controllers/v2/agent-cancel";
 
 expressWs(express());
 
@@ -46,12 +52,12 @@ v2Router.use(requestTimingMiddleware("v2"));
 // x402 payments protocol - https://github.com/coinbase/x402
 // v2Router.use(
 //   paymentMiddleware(
-//     (process.env.X402_PAY_TO_ADDRESS as `0x${string}`) ||
+//     (config.X402_PAY_TO_ADDRESS as `0x${string}`) ||
 //       "0x0000000000000000000000000000000000000000",
 //     {
 //       "POST /x402/search": {
-//         price: process.env.X402_ENDPOINT_PRICE_USD as string,
-//         network: process.env.X402_NETWORK as
+//         price: config.X402_ENDPOINT_PRICE_USD as string,
+//         network: config.X402_NETWORK as
 //           | "base-sepolia"
 //           | "base"
 //           | "avalanche-fuji"
@@ -177,6 +183,7 @@ v2Router.post(
 v2Router.get(
   "/scrape/:jobId",
   authMiddleware(RateLimiterMode.CrawlStatus),
+  validateJobIdParam,
   wrap(scrapeStatusController),
 );
 
@@ -229,32 +236,53 @@ v2Router.get(
 v2Router.get(
   "/crawl/:jobId",
   authMiddleware(RateLimiterMode.CrawlStatus),
+  validateJobIdParam,
   wrap(crawlStatusController),
 );
 
 v2Router.delete(
   "/crawl/:jobId",
   authMiddleware(RateLimiterMode.CrawlStatus),
+  validateJobIdParam,
   wrap(crawlCancelController),
 );
 
-v2Router.ws("/crawl/:jobId", crawlStatusWSController);
+v2Router.ws(
+  "/crawl/:jobId",
+  ((ws: any, req: express.Request, next: (err?: unknown) => void) => {
+    if (!isValidJobId(req.params.jobId)) {
+      ws.close(1008, "Invalid job ID");
+      return;
+    }
+    next();
+  }) as any,
+  crawlStatusWSController,
+);
 
 v2Router.get(
   "/batch/scrape/:jobId",
   authMiddleware(RateLimiterMode.CrawlStatus),
+  validateJobIdParam,
   wrap((req: any, res: any) => crawlStatusController(req, res, true)),
 );
 
 v2Router.delete(
   "/batch/scrape/:jobId",
   authMiddleware(RateLimiterMode.CrawlStatus),
+  validateJobIdParam,
   wrap(crawlCancelController),
+);
+
+v2Router.get(
+  "/batch/scrape/:jobId/errors",
+  authMiddleware(RateLimiterMode.CrawlStatus),
+  wrap(crawlErrorsController),
 );
 
 v2Router.get(
   "/crawl/:jobId/errors",
   authMiddleware(RateLimiterMode.CrawlStatus),
+  validateJobIdParam,
   wrap(crawlErrorsController),
 );
 
@@ -262,7 +290,7 @@ v2Router.post(
   "/extract",
   authMiddleware(RateLimiterMode.Extract),
   countryCheck,
-  checkCreditsMiddleware(1),
+  checkCreditsMiddleware(20),
   blocklistMiddleware,
   wrap(extractController),
 );
@@ -270,7 +298,31 @@ v2Router.post(
 v2Router.get(
   "/extract/:jobId",
   authMiddleware(RateLimiterMode.ExtractStatus),
+  validateJobIdParam,
   wrap(extractStatusController),
+);
+
+v2Router.post(
+  "/agent",
+  authMiddleware(RateLimiterMode.Extract),
+  countryCheck,
+  checkCreditsMiddleware(20),
+  blocklistMiddleware,
+  wrap(agentController),
+);
+
+v2Router.get(
+  "/agent/:jobId",
+  authMiddleware(RateLimiterMode.ExtractStatus),
+  validateJobIdParam,
+  wrap(agentStatusController),
+);
+
+v2Router.delete(
+  "/agent/:jobId",
+  authMiddleware(RateLimiterMode.ExtractStatus),
+  validateJobIdParam,
+  wrap(agentCancelController),
 );
 
 v2Router.get(
@@ -315,12 +367,12 @@ v2Router.post(
   countryCheck,
   blocklistMiddleware,
   paymentMiddleware(
-    (process.env.X402_PAY_TO_ADDRESS as `0x${string}`) ||
+    (config.X402_PAY_TO_ADDRESS as `0x${string}`) ||
       "0x0000000000000000000000000000000000000000",
     {
       "POST /x402/search": {
-        price: process.env.X402_ENDPOINT_PRICE_USD as string,
-        network: process.env.X402_NETWORK as
+        price: config.X402_ENDPOINT_PRICE_USD as string,
+        network: config.X402_NETWORK as
           | "base-sepolia"
           | "base"
           | "avalanche-fuji"

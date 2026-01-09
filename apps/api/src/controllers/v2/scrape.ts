@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { config } from "../../config";
 import { logger as _logger } from "../../lib/logger";
 import {
   Document,
@@ -18,6 +19,7 @@ import { processJobInternal } from "../../services/worker/scrape-worker";
 import { ScrapeJobData } from "../../types";
 import { teamConcurrencySemaphore } from "../../services/worker/team-semaphore";
 import { getJobPriority } from "../../lib/job-priority";
+import { logRequest } from "../../services/logging/log_job";
 
 export async function scrapeController(
   req: RequestWithAuth<{}, ScrapeResponse, ScrapeRequest>,
@@ -76,7 +78,26 @@ export async function scrapeController(
       }
 
       const zeroDataRetention =
-        req.acuc?.flags?.forceZDR || req.body.zeroDataRetention;
+        req.acuc?.flags?.forceZDR || (req.body.zeroDataRetention ?? false);
+
+      if (
+        req.body.__agentInterop &&
+        config.AGENT_INTEROP_SECRET &&
+        req.body.__agentInterop.auth !== config.AGENT_INTEROP_SECRET
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: "Invalid agent interop.",
+        });
+      } else if (req.body.__agentInterop && !config.AGENT_INTEROP_SECRET) {
+        return res.status(403).json({
+          success: false,
+          error: "Agent interop is not enabled.",
+        });
+      }
+
+      const shouldBill = req.body.__agentInterop?.shouldBill ?? true;
+      const agentRequestId = req.body.__agentInterop?.requestId ?? null;
 
       const logger = _logger.child({
         method: "scrapeController",
@@ -98,6 +119,20 @@ export async function scrapeController(
         account: req.account,
       });
 
+      if (!agentRequestId) {
+        await logRequest({
+          id: jobId,
+          kind: "scrape",
+          api_version: "v2",
+          team_id: req.auth.team_id,
+          origin: req.body.origin ?? "api",
+          integration: req.body.integration,
+          target_hint: req.body.url,
+          zeroDataRetention: zeroDataRetention || false,
+          api_key_id: req.acuc?.api_key_id ?? null,
+        });
+      }
+
       setSpanAttributes(span, {
         "scrape.zero_data_retention": zeroDataRetention,
         "scrape.origin": req.body.origin,
@@ -108,8 +143,8 @@ export async function scrapeController(
       const timeout = req.body.timeout;
 
       const isDirectToBullMQ =
-        process.env.SEARCH_PREVIEW_TOKEN !== undefined &&
-        process.env.SEARCH_PREVIEW_TOKEN === req.body.__searchPreviewToken;
+        config.SEARCH_PREVIEW_TOKEN !== undefined &&
+        config.SEARCH_PREVIEW_TOKEN === req.body.__searchPreviewToken;
 
       const totalWait =
         (req.body.waitFor ?? 0) +
@@ -118,8 +153,12 @@ export async function scrapeController(
           0,
         );
 
-      let doc: Document | null = null;
+      let lockTime: number | null = null;
+      let concurrencyLimited: boolean = false;
+
       let timeoutHandle: NodeJS.Timeout | null = null;
+      let doc: Document | null = null;
+
       try {
         const lockStart = Date.now();
         const aborter = new AbortController();
@@ -143,12 +182,13 @@ export async function scrapeController(
               basePriority: 10,
             });
 
-            // TODO: send 429 on abort
-            const lockTime = Date.now() - lockStart;
+            lockTime = Date.now() - lockStart;
+            concurrencyLimited = limited;
 
             logger.debug(`Lock acquired for team: ${req.auth.team_id}`, {
               teamId: req.auth.team_id,
               lockTime,
+              limited,
             });
 
             // Wait for job completion span
@@ -157,7 +197,7 @@ export async function scrapeController(
               async waitSpan => {
                 setSpanAttributes(waitSpan, {
                   "wait.timeout":
-                    timeout !== undefined ? timeout + totalWait : null,
+                    timeout !== undefined ? timeout + totalWait : undefined,
                   "wait.job_id": jobId,
                 });
 
@@ -173,7 +213,7 @@ export async function scrapeController(
                     team_id: req.auth.team_id,
                     scrapeOptions: {
                       ...req.body,
-                      ...(req.body.__experimental_cache
+                      ...((req.body as any).__experimental_cache
                         ? {
                             maxAge: req.body.maxAge ?? 4 * 60 * 60 * 1000, // 4 hours
                           }
@@ -186,7 +226,7 @@ export async function scrapeController(
                         ? true
                         : false,
                       unnormalizedSourceURL: preNormalizedBody.url,
-                      bypassBilling: isDirectToBullMQ,
+                      bypassBilling: isDirectToBullMQ || !shouldBill,
                       zeroDataRetention,
                       teamFlags: req.acuc?.flags ?? null,
                     },
@@ -197,6 +237,7 @@ export async function scrapeController(
                     zeroDataRetention,
                     apiKeyId: req.acuc?.api_key_id ?? null,
                     concurrencyLimited: limited,
+                    requestId: agentRequestId ?? undefined,
                   },
                 };
 
@@ -237,6 +278,17 @@ export async function scrapeController(
               "scrape.status_code": 200,
             });
             return res.status(200).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
+          if (e.code === "SCRAPE_NO_CACHED_DATA") {
+            setSpanAttributes(span, {
+              "scrape.status_code": 404,
+            });
+            return res.status(404).json({
               success: false,
               code: e.code,
               error: e.message,
@@ -316,11 +368,22 @@ export async function scrapeController(
         totalWait,
         usedLlm,
         formats,
+        concurrencyLimited,
+        concurrencyQueueDurationMs: lockTime || undefined,
       });
 
       return res.status(200).json({
         success: true,
-        data: doc!,
+        data: {
+          ...doc!,
+          metadata: {
+            ...doc!.metadata,
+            concurrencyLimited,
+            concurrencyQueueDurationMs: concurrencyLimited
+              ? lockTime || 0
+              : undefined,
+          },
+        },
         scrape_id: origin?.includes("website") ? jobId : undefined,
       });
     },

@@ -19,6 +19,7 @@ import {
 import { Meta } from "../..";
 import { abTestFireEngine } from "../../../../services/ab-test";
 
+import { config } from "../../../../config";
 export type FireEngineScrapeRequestCommon = {
   url: string;
 
@@ -154,6 +155,7 @@ const successSchema = z.object({
 
   usedMobileProxy: z.boolean().optional(),
   youtubeTranscriptContent: z.any().optional(),
+  timezone: z.string().optional(),
 });
 
 type FireEngineCheckStatusSuccess = z.infer<typeof successSchema>;
@@ -168,9 +170,9 @@ const failedSchema = z.object({
 });
 
 export const fireEngineURL =
-  process.env.FIRE_ENGINE_BETA_URL ?? "<mock-fire-engine-url>";
+  config.FIRE_ENGINE_BETA_URL ?? "<mock-fire-engine-url>";
 export const fireEngineStagingURL =
-  process.env.FIRE_ENGINE_STAGING_URL ?? "<mock-fire-engine-url>";
+  config.FIRE_ENGINE_STAGING_URL ?? "<mock-fire-engine-url>";
 
 export async function fireEngineScrape<
   Engine extends

@@ -117,9 +117,12 @@ class DocumentMetadata(BaseModel):
     num_pages: Optional[int] = None
     content_type: Optional[str] = None
     proxy_used: Optional[Literal["basic", "stealth"]] = None
+    timezone: Optional[str] = None
     cache_state: Optional[Literal["hit", "miss"]] = None
     cached_at: Optional[str] = None
     credits_used: Optional[int] = None
+    concurrency_limited: Optional[bool] = None
+    concurrency_queue_duration_ms: Optional[int] = None
 
     # Error information
     error: Optional[str] = None
@@ -191,6 +194,7 @@ class DocumentMetadata(BaseModel):
             "content_type",
             "cached_at",
             "error",
+            "timezone",
         }
         for k, v in list(data.items()):
             if isinstance(v, list) and k in single_str_fields:
@@ -227,7 +231,7 @@ class DocumentMetadata(BaseModel):
 class AgentOptions(BaseModel):
     """Configuration for the agent in extract operations."""
 
-    model: Literal["FIRE-1"] = "FIRE-1"
+    model: Literal["FIRE-1", "v3-beta"] = "FIRE-1"
 
 
 class AttributeResult(BaseModel):
@@ -504,6 +508,7 @@ class ScrapeOptions(BaseModel):
     block_ads: Optional[bool] = None
     proxy: Optional[Literal["basic", "stealth", "auto"]] = None
     max_age: Optional[int] = None
+    min_age: Optional[int] = None
     store_in_cache: Optional[bool] = None
     integration: Optional[str] = None
 
@@ -770,7 +775,20 @@ class ExtractResponse(BaseModel):
     warning: Optional[str] = None
     sources: Optional[Dict[str, Any]] = None
     expires_at: Optional[datetime] = None
+    credits_used: Optional[int] = None
+    tokens_used: Optional[int] = None
 
+
+class AgentResponse(BaseModel):
+    """Response for agent operations (start/status/final)."""
+
+    success: Optional[bool] = None
+    id: Optional[str] = None
+    status: Optional[Literal["processing", "completed", "failed"]] = None
+    data: Optional[Any] = None
+    error: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    credits_used: Optional[int] = None
 
 # Usage/limits types
 class ConcurrencyCheck(BaseModel):
@@ -946,7 +964,7 @@ class SearchRequest(BaseModel):
     tbs: Optional[str] = None
     location: Optional[str] = None
     ignore_invalid_urls: Optional[bool] = None
-    timeout: Optional[int] = 60000
+    timeout: Optional[int] = 300000
     scrape_options: Optional[ScrapeOptions] = None
     integration: Optional[str] = None
 

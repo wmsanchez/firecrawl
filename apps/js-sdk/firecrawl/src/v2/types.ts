@@ -155,6 +155,7 @@ export interface ScrapeOptions {
   blockAds?: boolean;
   proxy?: 'basic' | 'stealth' | 'auto' | string;
   maxAge?: number;
+  minAge?: number;
   storeInCache?: boolean;
   integration?: string;
 }
@@ -346,10 +347,13 @@ export interface DocumentMetadata {
   scrapeId?: string;
   numPages?: number;
   contentType?: string;
+  timezone?: string;
   proxyUsed?: 'basic' | 'stealth';
   cacheState?: 'hit' | 'miss';
   cachedAt?: string;
   creditsUsed?: number;
+  concurrencyLimited?: boolean;
+  concurrencyQueueDurationMs?: number;
 
   // Error information
   error?: string;
@@ -528,10 +532,26 @@ export interface ExtractResponse {
   warning?: string;
   sources?: Record<string, unknown>;
   expiresAt?: string;
+  creditsUsed?: number;
+}
+
+export interface AgentResponse {
+  success: boolean;
+  id: string;
+  error?: string;
+}
+
+export interface AgentStatusResponse {
+  success: boolean;
+  status: 'processing' | 'completed' | 'failed';
+  error?: string;
+  data?: unknown;
+  expiresAt: string;
+  creditsUsed?: number;
 }
 
 export interface AgentOptions {
-  model: 'FIRE-1';
+  model: 'FIRE-1' | 'v3-beta';
 }
 
 export interface ConcurrencyCheck {
@@ -611,17 +631,36 @@ export class SdkError extends Error {
   status?: number;
   code?: string;
   details?: unknown;
+  jobId?: string;
   constructor(
     message: string,
     status?: number,
     code?: string,
-    details?: unknown
+    details?: unknown,
+    jobId?: string
   ) {
     super(message);
     this.name = 'FirecrawlSdkError';
     this.status = status;
     this.code = code;
     this.details = details;
+    this.jobId = jobId;
+  }
+}
+
+export class JobTimeoutError extends SdkError {
+  timeoutSeconds: number;
+  constructor(jobId: string, timeoutSeconds: number, jobType: 'batch' | 'crawl' = 'batch') {
+    const jobTypeLabel = jobType === 'batch' ? 'batch scrape' : 'crawl';
+    super(
+      `${jobTypeLabel.charAt(0).toUpperCase() + jobTypeLabel.slice(1)} job ${jobId} did not complete within ${timeoutSeconds} seconds`,
+      undefined,
+      'JOB_TIMEOUT',
+      undefined,
+      jobId
+    );
+    this.name = 'JobTimeoutError';
+    this.timeoutSeconds = timeoutSeconds;
   }
 }
 

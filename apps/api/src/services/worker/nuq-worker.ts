@@ -1,4 +1,7 @@
 import "dotenv/config";
+import { config } from "../../config";
+import "../sentry";
+import { setSentryServiceTag } from "../sentry";
 import { logger as _logger } from "../../lib/logger";
 import { processJobInternal } from "./scrape-worker";
 import { scrapeQueue, nuqGetLocalMetrics, nuqHealthCheck } from "./nuq";
@@ -8,6 +11,8 @@ import { initializeBlocklist } from "../../scraper/WebScraper/utils/blocklist";
 import { initializeEngineForcing } from "../../scraper/WebScraper/utils/engine-forcing";
 
 (async () => {
+  setSentryServiceTag("nuq-worker");
+
   try {
     await initializeBlocklist();
     initializeEngineForcing();
@@ -33,19 +38,18 @@ import { initializeEngineForcing } from "../../scraper/WebScraper/utils/engine-f
     }
   });
 
-  const server = app.listen(
-    Number(process.env.NUQ_WORKER_PORT ?? process.env.PORT ?? 3000),
-    () => {
-      _logger.info("NuQ worker metrics server started");
-    },
-  );
+  const server = app.listen(config.NUQ_WORKER_PORT, () => {
+    _logger.info("NuQ worker metrics server started");
+  });
 
   function shutdown() {
     isShuttingDown = true;
   }
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  if (require.main === module) {
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  }
 
   let noJobTimeout = 1500;
 
@@ -55,7 +59,7 @@ import { initializeEngineForcing } from "../../scraper/WebScraper/utils/engine-f
     if (job === null) {
       _logger.info("No jobs to process", { module: "nuq/metrics" });
       await new Promise(resolve => setTimeout(resolve, noJobTimeout));
-      if (!process.env.NUQ_RABBITMQ_URL) {
+      if (!config.NUQ_RABBITMQ_URL) {
         noJobTimeout = Math.min(noJobTimeout * 2, 10000);
       }
       continue;

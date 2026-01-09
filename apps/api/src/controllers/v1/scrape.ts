@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { config } from "../../config";
 import { logger as _logger } from "../../lib/logger";
 import {
   Document,
@@ -13,10 +14,12 @@ import { fromV1ScrapeOptions } from "../v2/types";
 import { TransportableError } from "../../lib/error";
 import { NuQJob } from "../../services/worker/nuq";
 import { checkPermissions } from "../../lib/permissions";
+import { includesFormat } from "../../lib/format-utils";
 import { teamConcurrencySemaphore } from "../../services/worker/team-semaphore";
 import { processJobInternal } from "../../services/worker/scrape-worker";
 import { ScrapeJobData } from "../../types";
 import { AbortManagerThrownError } from "../../scraper/scrapeURL/lib/abortManager";
+import { logRequest } from "../../services/logging/log_job";
 
 export async function scrapeController(
   req: RequestWithAuth<{}, ScrapeResponse, ScrapeRequest>,
@@ -62,14 +65,26 @@ export async function scrapeController(
     account: req.account,
   });
 
+  await logRequest({
+    id: jobId,
+    kind: "scrape",
+    api_version: "v1",
+    team_id: req.auth.team_id,
+    origin: req.body.origin,
+    integration: req.body.integration,
+    target_hint: req.body.url,
+    zeroDataRetention: zeroDataRetention || false,
+    api_key_id: req.acuc?.api_key_id ?? null,
+  });
+
   const origin = req.body.origin;
   const timeout = req.body.timeout;
 
   // const startTime = new Date().getTime();
 
   const isDirectToBullMQ =
-    process.env.SEARCH_PREVIEW_TOKEN !== undefined &&
-    process.env.SEARCH_PREVIEW_TOKEN === req.body.__searchPreviewToken;
+    config.SEARCH_PREVIEW_TOKEN !== undefined &&
+    config.SEARCH_PREVIEW_TOKEN === req.body.__searchPreviewToken;
 
   const { scrapeOptions, internalOptions } = fromV1ScrapeOptions(
     req.body,
@@ -84,8 +99,12 @@ export async function scrapeController(
       0,
     );
 
+  let lockTime: number | null = null;
+  let concurrencyLimited: boolean = false;
+
   let timeoutHandle: NodeJS.Timeout | null = null;
   let doc: Document | null = null;
+
   try {
     const lockStart = Date.now();
     const aborter = new AbortController();
@@ -108,11 +127,13 @@ export async function scrapeController(
           basePriority: 10,
         });
 
-        const lockTime = Date.now() - lockStart;
+        lockTime = Date.now() - lockStart;
+        concurrencyLimited = limited;
 
         logger.debug(`Lock acquired for team: ${req.auth.team_id}`, {
           teamId: req.auth.team_id,
           lockTime,
+          limited,
         });
 
         const job: NuQJob<ScrapeJobData> = {
@@ -128,7 +149,7 @@ export async function scrapeController(
             internalOptions: {
               ...internalOptions,
               teamId: req.auth.team_id,
-              saveScrapeResultToGCS: process.env.GCS_FIRE_ENGINE_BUCKET_NAME
+              saveScrapeResultToGCS: config.GCS_FIRE_ENGINE_BUCKET_NAME
                 ? true
                 : false,
               unnormalizedSourceURL: preNormalizedBody.url,
@@ -193,7 +214,7 @@ export async function scrapeController(
 
   logger.info("Removed job from queue");
 
-  if (!req.body.formats.includes("rawHtml")) {
+  if (!includesFormat(req.body.formats, "rawHtml")) {
     if (doc && doc.rawHtml) {
       delete doc.rawHtml;
     }
@@ -203,14 +224,14 @@ export async function scrapeController(
   const controllerTime = new Date().getTime() - controllerStartTime;
 
   let usedLlm =
-    req.body.formats?.includes("json") ||
-    req.body.formats?.includes("summary") ||
-    req.body.formats?.includes("branding") ||
-    req.body.formats?.includes("extract");
+    includesFormat(req.body.formats, "json") ||
+    includesFormat(req.body.formats, "summary") ||
+    includesFormat(req.body.formats, "branding") ||
+    includesFormat(req.body.formats, "extract");
 
   if (
     !usedLlm &&
-    req.body.formats?.includes("changeTracking") &&
+    includesFormat(req.body.formats, "changeTracking") &&
     req.body.changeTrackingOptions?.modes?.includes("json")
   ) {
     usedLlm = true;
@@ -228,11 +249,22 @@ export async function scrapeController(
     totalWait,
     usedLlm,
     formats: req.body.formats,
+    concurrencyLimited,
+    concurrencyQueueDurationMs: lockTime || undefined,
   });
 
   return res.status(200).json({
     success: true,
-    data: doc!,
+    data: {
+      ...doc!,
+      metadata: {
+        ...doc!.metadata,
+        concurrencyLimited,
+        concurrencyQueueDurationMs: concurrencyLimited
+          ? lockTime || 0
+          : undefined,
+      },
+    },
     scrape_id: origin?.includes("website") ? jobId : undefined,
   });
 }

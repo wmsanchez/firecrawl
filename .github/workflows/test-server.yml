@@ -31,10 +31,14 @@ jobs:
         image: redis
         ports:
           - 6379:6379
+      rabbitmq:
+        image: rabbitmq
+        ports:
+          - 5672:5672
     env:
       HOST: 0.0.0.0
       TEST_SUITE_SELF_HOSTED: true
-      TEST_SUITE_WEBSITE: ${{ matrix.proxy == 'no-proxy' && 'http://127.0.0.1:4321' || '' }}
+      TEST_SUITE_WEBSITE: http://127.0.0.1:4321
       OPENAI_API_KEY: ${{ matrix.ai == 'openai' && secrets.OPENAI_API_KEY || '' }}
       SEARXNG_ENDPOINT: ${{ matrix.search == 'searxng' && 'http://localhost:3434' || '' }}
       PLAYWRIGHT_MICROSERVICE_URL: ${{ matrix.engine == 'playwright' && 'http://localhost:3003/scrape' || '' }}
@@ -42,8 +46,10 @@ jobs:
       PROXY_USERNAME: ${{ matrix.proxy == 'proxy' && secrets.PROXY_USERNAME || '' }}
       PROXY_PASSWORD: ${{ matrix.proxy == 'proxy' && secrets.PROXY_PASSWORD || '' }}
       NUQ_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      NUQ_RABBITMQ_URL: amqp://localhost:5672
       USE_GO_MARKDOWN_PARSER: true
       ALLOW_LOCAL_WEBHOOKS: true
+      FIRECRAWL_LOG_TO_FILE: true
     steps:
       - uses: actions/checkout@v5
 
@@ -196,12 +202,22 @@ jobs:
         working-directory: apps/api
         env:
           npm_config_ignore_scripts: "true" # required currently to prevent re-building cached native lib
-      
+
+      - name: Publish test report
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Test Report (${{ matrix.engine }}, ${{ matrix.proxy }}, ${{ matrix.search }}, ${{ matrix.ai }})
+          path: apps/api/test-results/junit.xml
+          reporter: jest-junit
+          fail-on-error: true
+
       - name: Copy log files
         if: always()
         run: |
           mkdir -p logs
-          cp ./apps/api/firecrawl.log logs/firecrawl.log
+          cp ./apps/api/firecrawl-app.log logs/firecrawl.log || true
+          cp ./apps/api/firecrawl-worker.log logs/firecrawl-worker.log || true
 
       - name: Copy SearXNG logs
         if: always() && matrix.search == 'searxng'
@@ -227,7 +243,6 @@ jobs:
   # prod-test:
   #   name: Production environment tests
   #   runs-on: big-runner
-  #   needs: audit
   #   services:
   #     redis:
   #       image: redis

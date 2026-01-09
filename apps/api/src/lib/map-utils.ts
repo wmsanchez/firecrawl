@@ -91,7 +91,9 @@ export async function getMapResults({
   flags,
   useIndex = true,
   location,
+  headers,
   maxFireEngineResults = MAX_FIRE_ENGINE_RESULTS,
+  id: providedId,
 }: {
   url: string;
   search?: string;
@@ -108,7 +110,9 @@ export async function getMapResults({
   flags: TeamFlags | null;
   useIndex?: boolean;
   location?: ScrapeOptions["location"];
+  headers?: Record<string, string>;
   maxFireEngineResults?: number;
+  id?: string;
 }): Promise<MapResult> {
   const functionStartTime = Date.now();
 
@@ -122,9 +126,9 @@ export async function getMapResults({
     url = urlObj.toString();
   }
 
-  const id = uuidv7();
+  const id = providedId ?? uuidv7();
   let mapResults: MapDocument[] = [];
-  const zeroDataRetention = flags?.forceZDR ?? false;
+  const zeroDataRetention = flags?.forceZDR || false;
 
   const sc: StoredCrawl = {
     originUrl: url,
@@ -135,6 +139,7 @@ export async function getMapResults({
     },
     scrapeOptions: scrapeOptions.parse({
       ...(location ? { location } : {}),
+      ...(headers ? { headers } : {}),
     }),
     internalOptions: { teamId },
     team_id: teamId,
