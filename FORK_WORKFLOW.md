@@ -24,6 +24,7 @@ Keep track of files we've modified from the original:
 |------|------|-------------|
 | `.gitignore` | Modified | Added local config files to ignore list |
 | `docker-compose.yaml` | Ignored | Local Docker configuration (not tracked) |
+| `litellm-config.yaml` | Ignored | LiteLLM Proxy config for Bedrock routing (not tracked) |
 | `searxng/settings.yml` | Ignored | Local SearXNG settings (not tracked) |
 | `FORK_WORKFLOW.md` | New | This documentation file |
 
@@ -32,6 +33,7 @@ Keep track of files we've modified from the original:
 These files are in `.gitignore` and won't be committed. They contain our local-only configurations:
 
 - `docker-compose.yaml` - Use `docker-compose.example.yaml` from upstream as reference
+- `litellm-config.yaml` - LiteLLM Proxy model routing (Bedrock)
 - `searxng/settings.yml` - Local search engine settings
 
 > **Tip:** When making new customizations, add them to this list to track what may need attention during merges.
@@ -150,6 +152,70 @@ git diff main..upstream/main
 
 ---
 
+## LLM Setup — Amazon Bedrock via LiteLLM Proxy
+
+Firecrawl needs an LLM for features like extraction, smart scraping, and deep research. Instead of modifying Firecrawl's code (which hardcodes OpenAI as the provider), we run a **LiteLLM Proxy** container that translates OpenAI-compatible API calls to Amazon Bedrock.
+
+### How it works
+
+```
+Firecrawl (thinks it's talking to OpenAI)
+  → OPENAI_BASE_URL = http://litellm:4000/v1
+    → LiteLLM Proxy (OpenAI-compatible gateway)
+      → Amazon Bedrock (Claude, Titan embeddings)
+```
+
+### Configuration files
+
+| File | Purpose |
+|------|---------|
+| `litellm-config.yaml` | Model routing — maps OpenAI model names to Bedrock models |
+| `.env` | AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME`) |
+
+### Model mapping
+
+| Firecrawl requests | LiteLLM routes to |
+|-------------------|-------------------|
+| `gpt-4o` | `bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0` |
+| `gpt-4o-mini` | `bedrock/anthropic.claude-3-haiku-20240307-v1:0` |
+| `o3-mini` | `bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0` |
+| `text-embedding-3-small` | `bedrock/amazon.titan-embed-text-v2:0` |
+
+### Updating models
+
+Edit `litellm-config.yaml` and restart:
+```bash
+docker compose restart litellm
+```
+
+### Testing the LLM connection
+
+```bash
+# Check LiteLLM health
+curl http://localhost:4000/health/liveliness
+
+# Test a chat completion through LiteLLM
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-litellm" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Say hello"}]}'
+```
+
+---
+
+## Keeping Up-to-Date — Pre-built Images
+
+We use pre-built Docker images from `ghcr.io/firecrawl/` instead of building from source. To update:
+
+```bash
+# Pull latest images and restart
+docker compose pull && docker compose up -d
+```
+
+Since we don't modify any application code, this is safe and avoids build times.
+
+---
+
 ## Quick Reference
 
 | Task | Command |
@@ -161,6 +227,9 @@ git diff main..upstream/main
 | Push to our fork | `git push origin main` |
 | Abort a bad merge | `git merge --abort` |
 | Abort a bad rebase | `git rebase --abort` |
+| Update Docker images | `docker compose pull && docker compose up -d` |
+| Restart LiteLLM after config change | `docker compose restart litellm` |
+| Test LLM connection | `curl http://localhost:4000/health/liveliness` |
 
 ---
 
@@ -184,4 +253,4 @@ git reflog
 
 ---
 
-*Last updated: January 2026*
+*Last updated: March 2026*

@@ -1,10 +1,10 @@
 name: firecrawl
 
 x-common-service: &common-service
-  # NOTE: If you don't want to build the service locally,
-  # comment out the build: statement and uncomment the image: statement
-  # image: ghcr.io/firecrawl/firecrawl
-  build: apps/api
+  # NOTE: If you want to build the service locally instead of using pre-built images,
+  # comment out the image: statement and uncomment the build: statement
+  image: ghcr.io/firecrawl/firecrawl:latest
+  # build: apps/api
 
   ulimits:
     nofile:
@@ -35,11 +35,11 @@ x-common-env: &common-env
   CRAWL_CONCURRENT_REQUESTS: ${CRAWL_CONCURRENT_REQUESTS:-10}
   MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-5}
   BROWSER_POOL_SIZE: ${BROWSER_POOL_SIZE:-5}
-  OPENAI_API_KEY: ${OPENAI_API_KEY}
-  OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-litellm}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://litellm:4000/v1}
   MODEL_NAME: ${MODEL_NAME}
-  MODEL_EMBEDDING_NAME: ${MODEL_EMBEDDING_NAME} 
-  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL} 
+  MODEL_EMBEDDING_NAME: ${MODEL_EMBEDDING_NAME}
+  # OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}  # Leave unset so Firecrawl defaults to "openai" provider → LiteLLM
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
   BULL_AUTH_KEY: ${BULL_AUTH_KEY}
   TEST_API_KEY: ${TEST_API_KEY}
@@ -59,10 +59,10 @@ x-common-env: &common-env
 
 services:
   playwright-service:
-    # NOTE: If you don't want to build the service locally,
-    # comment out the build: statement and uncomment the image: statement
-    # image: ghcr.io/firecrawl/playwright-service:latest
-    build: apps/playwright-service-ts
+    # NOTE: If you want to build the service locally instead of using pre-built images,
+    # comment out the image: statement and uncomment the build: statement
+    image: ghcr.io/firecrawl/playwright-service:latest
+    # build: apps/playwright-service-ts
     environment:
       PORT: 3000
       PROXY_SERVER: ${PROXY_SERVER}
@@ -74,9 +74,9 @@ services:
     networks:
       - backend
     # Resource limits for Docker Compose (not Swarm)
-    cpus: 2.0
-    mem_limit: 4G
-    memswap_limit: 4G
+    cpus: 1.0
+    mem_limit: 2G
+    memswap_limit: 2G
     logging:
       driver: "json-file"
       options:
@@ -103,14 +103,16 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      litellm:
+        condition: service_healthy
     ports:
       - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
     command: node dist/src/harness.js --start-docker
     # Resource limits for Docker Compose (not Swarm)
     # Increase if you have more CPU cores/RAM available
-    cpus: 4.0
-    mem_limit: 8G
-    memswap_limit: 8G
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
 
   redis:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),
@@ -160,6 +162,33 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+        compress: "true"
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    command: --config /app/config.yaml --port 4000
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION_NAME: ${AWS_REGION_NAME:-us-east-1}
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    cpus: 0.5
+    mem_limit: 512M
+    memswap_limit: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
         compress: "true"
 
   searxng:
